@@ -1,7 +1,7 @@
 import os
 import pika
 import json
-from flask import Flask
+from flask import Flask, request, jsonify
 from flask_mail import Mail, Message
 from config.mongo import get_mongo_client
 from dotenv import load_dotenv
@@ -25,7 +25,7 @@ notifications_collection = db.notifications
 
 def send_confirmation_email(booking_data):
     """Send email using Flask-Mail with proper app context"""
-    with app.app_context():  # ✅ FIX: Ensure Flask app context is active
+    with app.app_context():
         try:
             msg = Message(
                 subject="Booking Confirmation",
@@ -42,14 +42,30 @@ def send_confirmation_email(booking_data):
                 "status": "sent",
                 "message": "Confirmation email sent successfully"
             })
-            
-            print(f"✅ Email sent successfully to {booking_data['user_email']}")
+            return {"success": True, "message": "Email sent successfully"}
         except Exception as e:
-            print(f"❌ Failed to send email: {str(e)}")
             notifications_collection.insert_one({
                 "status": "failed",
                 "error": str(e)
             })
+            return {"success": False, "message": str(e)}
+
+@app.route("/send-email", methods=["POST"])
+def send_email_api():
+    """API to trigger email notification manually"""
+    try:
+        data = request.get_json()
+        if not data or "booking_id" not in data or "user_email" not in data:
+            return jsonify({"error": "Invalid request data"}), 400
+        
+        response = send_confirmation_email(data)
+        return jsonify(response)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/test", methods=["GET"])
+def test():
+    return jsonify({"message": "API is running"})
 
 def consume_booking_events():
     """RabbitMQ Consumer for booking confirmations"""
@@ -67,7 +83,7 @@ def consume_booking_events():
         def callback(ch, method, properties, body):
             booking_data = json.loads(body)
             print(f"📩 Received booking confirmation: {booking_data}")
-            send_confirmation_email(booking_data)  # ✅ Calls function with app context
+            send_confirmation_email(booking_data)
         
         channel.basic_consume(
             queue='booking_confirmed',
@@ -86,5 +102,5 @@ if __name__ == "__main__":
     import threading
     threading.Thread(target=consume_booking_events, daemon=True).start()
     
-    # Start Flask app (optional endpoints)
-    app.run(port=5003)
+    # Start Flask app
+    app.run(port=5004)

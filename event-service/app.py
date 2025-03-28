@@ -42,54 +42,79 @@ def index():
                          total_pages=(total_events // per_page) + 1,
                          format_date=format_date)
 
-@app.route('/events/create', methods=['GET', 'POST'])
+@app.route('/events/create', methods=['POST'])
 def create_event():
-    if request.method == 'POST':
-        event_data = {
-            'name': request.form['name'],
-            'location': request.form['location'],
-            'date': request.form['date'],
-            'price': float(request.form['price']),
-            'tickets_available': int(request.form['tickets_available']),
-            'description': request.form['description'],
-            'picture': request.form['picture'] or 'https://via.placeholder.com/400x250'
+    try:
+        if request.is_json:  # If the request is JSON
+            event_data = request.get_json()
+        else:  # If the request is form-data
+            event_data = request.form.to_dict()
+
+        name = event_data.get('name')
+        if not name:
+            return jsonify({"error": "Missing 'name' field"}), 400
+
+        event = {
+            'name': name,
+            'location': event_data.get('location', ''),
+            'date': event_data.get('date', ''),
+            'price': float(event_data.get('price', 0)),
+            'tickets_available': int(event_data.get('tickets_available', 0)),
+            'description': event_data.get('description', ''),
+            'picture': event_data.get('picture', 'https://via.placeholder.com/400x250')
         }
-        result = events_collection.insert_one(event_data)
-        session.setdefault('my_events', []).append(str(result.inserted_id))
-        flash('Event created successfully!', 'success')
-        return redirect(url_for('event_detail', event_id=result.inserted_id))
-    return render_template('create_event.html')
+
+        result = events_collection.insert_one(event)
+        return jsonify({"message": "Event created successfully!", "event_id": str(result.inserted_id)}), 201
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+from flask import jsonify
 
 @app.route('/events/<event_id>')
 def event_detail(event_id):
     event = events_collection.find_one({'_id': ObjectId(event_id)})
     if not event:
-        flash('Event not found!', 'danger')
-        return redirect(url_for('index'))
-    return render_template('event_detail.html', event=event, format_date=format_date)
+        return jsonify({'error': 'Event not found!'}), 404
+    
+    # Convert ObjectId to string for JSON compatibility
+    event['_id'] = str(event['_id'])
+    
+    return jsonify(event)
 
-@app.route('/events/<event_id>/edit', methods=['GET', 'POST'])
+@app.route('/api/events/<event_id>/edit', methods=['PUT'])
 def edit_event(event_id):
     event = events_collection.find_one({'_id': ObjectId(event_id)})
     if not event:
         flash('Event not found!', 'danger')
         return redirect(url_for('index'))
     
-    if request.method == 'POST':
-        update_data = {
-            'name': request.form['name'],
-            'location': request.form['location'],
-            'date': request.form['date'],
-            'price': float(request.form['price']),
-            'tickets_available': int(request.form['tickets_available']),
-            'description': request.form['description'],
-            'picture': request.form['picture']
-        }
-        events_collection.update_one({'_id': ObjectId(event_id)}, {'$set': update_data})
-        flash('Event updated successfully!', 'success')
-        return redirect(url_for('event_detail', event_id=event_id))
-    
+    if request.method == 'PUT':
+        try:
+            if request.is_json:  # Handle JSON request
+                update_data = request.get_json()
+            else:  # Handle form-data request
+                update_data = request.form.to_dict()
+
+            # Validate required fields
+            name = update_data.get('name')
+            if not name:
+                return jsonify({"error": "Missing 'name' field"}), 400
+
+            update_data['price'] = float(update_data.get('price', 0))
+            update_data['tickets_available'] = int(update_data.get('tickets_available', 0))
+
+            events_collection.update_one({'_id': ObjectId(event_id)}, {'$set': update_data})
+            flash('Event updated successfully!', 'success')
+            return jsonify({"message": "Event updated successfully"}), 200
+
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     return render_template('edit_event.html', event=event)
+
 
 @app.route('/events/<event_id>/delete', methods=['POST'])
 def delete_event(event_id):

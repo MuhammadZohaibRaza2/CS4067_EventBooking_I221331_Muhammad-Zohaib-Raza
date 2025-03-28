@@ -8,6 +8,7 @@ import json
 import os
 from dotenv import load_dotenv
 import logging
+import requests
 
 # Load environment variables
 load_dotenv()
@@ -24,38 +25,24 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(bind=engine)
 
-# RabbitMQ configuration
-RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
-RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", 5672))
+NOTIFICATION_SERVICE_URL = "http://localhost:5004/send-email"
 
-def publish_booking_confirmation(booking_id: int, user_email: str):
-    """Publish booking confirmation event to RabbitMQ"""
+def notify_user(booking_id, user_email):
+    """Send booking confirmation request to the Notification Service"""
     try:
-        connection = pika.BlockingConnection(
-            pika.ConnectionParameters(
-                host=RABBITMQ_HOST,
-                port=RABBITMQ_PORT
-            )
-        )
-        channel = connection.channel()
-        channel.queue_declare(queue='booking_confirmed')
-        
-        message = {
+        payload = {
             "booking_id": booking_id,
-            "user_email": user_email,
-            "status": "CONFIRMED"
+            "user_email": user_email
         }
-        
-        channel.basic_publish(
-            exchange='',
-            routing_key='booking_confirmed',
-            body=json.dumps(message)
-        )
-        logger.info(f"Published booking confirmation for ID: {booking_id}")
-        connection.close()
-        
+        response = requests.post(f"{NOTIFICATION_SERVICE_URL}", json=payload)
+
+        if response.status_code == 200:
+            logger.info(f"✅ Notification sent successfully: {payload}")
+        else:
+            logger.error(f"❌ Failed to send notification: {response.text}")
+
     except Exception as e:
-        logger.error(f"Failed to publish message: {str(e)}")
+        logger.error(f"❌ Error calling Notification Service: {str(e)}")
 
 @app.route('/bookings', methods=['POST'])
 def create_booking():
@@ -87,7 +74,7 @@ def create_booking():
         logger.info(f"Booking created: ID {booking.id}")
 
         # Publish confirmation event
-        publish_booking_confirmation(
+        notify_user(
             booking_id=booking.id,
             user_email=data["user_email"]
         )

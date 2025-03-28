@@ -7,9 +7,10 @@ from auth import get_password_hash, verify_password, create_access_token
 import logging
 from database import SessionLocal, engine, Base 
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 import httpx
+from fastapi import HTTPException, status
 
 # Add configuration
 EVENT_SERVICE_URL = "http://localhost:5000/api/events" 
@@ -127,9 +128,13 @@ async def get_user(user_id: int, db: Session = Depends(get_db)):
 async def fetch_event(event_id: str):
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{EVENT_SERVICE_URL}/{event_id}")
-        response.raise_for_status()
-        return response.json()
-import httpx
+        return response.json() if response.status_code == 200 else None 
+
+async def edit_event(event_id: str, data: dict):
+    async with httpx.AsyncClient() as client:
+        response = await client.put(f"{EVENT_SERVICE_URL}/{event_id}/edit", json=data)
+        return response.json() if response.status_code == 200 else None
+
 from fastapi import HTTPException, status
 
 # Add Pydantic model for booking creation
@@ -150,7 +155,9 @@ async def create_booking(
         raise HTTPException(status_code=404, detail="User not found")
 
     # Calculate amount using Event Service
-    event = await fetch_event(booking.event_id)  # Your existing logic
+    event = await fetch_event(booking.event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found") 
     amount = booking.tickets * event["price"]
 
     # Call Booking Service with user_email
@@ -163,14 +170,29 @@ async def create_booking(
     }
 
     async with httpx.AsyncClient() as client:
-        response = await client.post(BOOKING_SERVICE_URL, json=booking_data)
+        response = await client.post(BOOKING_SERVICE_URL, json=booking_data, timeout=30.0)
+        # if response is ok mean booking confirmed then edit the event tickets
+        if response.status_code == 201:
+            # Update event tickets
+            new_tickets_available = event["tickets_available"] - booking.tickets
+            edit_data = {
+                         "name": event["name"],
+                         "location": event["location"],
+                            "date": event["date"],
+                            "price": event["price"],
+                            "tickets_available": new_tickets_available,
+                            "description": event["description"],
+                            "picture": event["picture"]
+                        }
+            await edit_event(booking.event_id, edit_data)
     return response.json()
+
 # ... (previous imports)
 from bson import ObjectId  # Add this import
 
 # ========== Updated Pydantic Models ==========
 class EventResponse(BaseModel):
-    _id: str
+    id: str = Field(..., alias= "_id" )
     name: str
     location: str
     date: str  # Now matches raw date string from MongoDB
@@ -178,12 +200,10 @@ class EventResponse(BaseModel):
     tickets_available: int
     description: str
     picture: str
-
     class Config:
-        allow_population_by_field_name = True
-        json_encoders = {
-            ObjectId: str  # Handle ObjectId conversion
-        }
+        populate_by_name = True
+
+   
 
 # ========== Updated Endpoint ==========
 @app.get("/events", response_model=List[EventResponse])
